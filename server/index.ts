@@ -10,6 +10,8 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
 
@@ -452,11 +454,284 @@ const baseTools = {
     deleteFile: deleteFileTool,
 };
 
-// Combined tools (base + MCP tools)
+// --- Skills Integration (Start) ---
+
+interface CodeBlock {
+    language: string;
+    code: string;
+    index: number;
+}
+
+interface SkillInfo {
+    name: string;
+    description: string;
+    path: string;
+    content: string;
+    codeBlocks: CodeBlock[];
+    hasExecutableScripts: boolean;
+}
+
+/**
+ * Load available Cursor skills
+ */
+function loadSkills(): Record<string, SkillInfo> {
+    const skills: Record<string, SkillInfo> = {};
+    const skillsDir = path.join(os.homedir(), '.cursor', 'skills-cursor');
+    
+    if (!fs.existsSync(skillsDir)) {
+        console.log('ℹ️  Skills directory not found:', skillsDir);
+        return skills;
+    }
+    
+    try {
+        const skillDirs = fs.readdirSync(skillsDir, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name);
+        
+        for (const skillDir of skillDirs) {
+            const skillPath = path.join(skillsDir, skillDir, 'SKILL.md');
+            if (fs.existsSync(skillPath)) {
+                try {
+                    const content = fs.readFileSync(skillPath, 'utf-8');
+                    // Parse YAML frontmatter
+                    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+                    let description = `Cursor skill: ${skillDir}`;
+                    let name = skillDir;
+                    
+                    if (frontmatterMatch) {
+                        const frontmatter = frontmatterMatch[1];
+                        const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+                        const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+                        if (nameMatch) name = nameMatch[1].trim();
+                        if (descMatch) description = descMatch[1].trim();
+                    }
+                    
+                    // Extract code blocks from content
+                    const codeBlocks: CodeBlock[] = [];
+                    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+                    let match;
+                    let index = 0;
+                    const executableLanguages = ['bash', 'sh', 'shell', 'python', 'python3', 'node', 'javascript', 'js', 'typescript', 'ts'];
+                    
+                    while ((match = codeBlockRegex.exec(content)) !== null) {
+                        const language = (match[1] || '').toLowerCase();
+                        const code = match[2].trim();
+                        if (code) {
+                            codeBlocks.push({
+                                language,
+                                code,
+                                index: index++
+                            });
+                        }
+                    }
+                    
+                    const hasExecutableScripts = codeBlocks.some(block => 
+                        executableLanguages.includes(block.language) || block.language === ''
+                    );
+                    
+                    skills[`skill_${skillDir}`] = {
+                        name,
+                        description,
+                        path: skillPath,
+                        content: content.replace(/^---\n[\s\S]*?\n---\n/, '').trim(), // Remove frontmatter
+                        codeBlocks,
+                        hasExecutableScripts
+                    };
+                    
+                    const scriptInfo = hasExecutableScripts 
+                        ? ` (${codeBlocks.filter(b => executableLanguages.includes(b.language) || b.language === '').length} executable scripts)`
+                        : '';
+                    console.log(`📚 Loaded skill: ${name} (${skillDir})${scriptInfo}`);
+                } catch (error: any) {
+                    console.warn(`⚠️  Failed to load skill ${skillDir}:`, error.message);
+                }
+            }
+        }
+        
+        if (Object.keys(skills).length > 0) {
+            console.log(`✅ Loaded ${Object.keys(skills).length} skills`);
+        }
+    } catch (error: any) {
+        console.error('❌ Failed to load skills:', error.message);
+    }
+    
+    return skills;
+}
+
+/**
+ * Execute a script from a code block
+ */
+async function executeScript(language: string, code: string, workingDir: string = PROJECT_ROOT): Promise<{ success: boolean; output: string; error?: string }> {
+    const execAsync = promisify(exec);
+    
+    try {
+        let command = '';
+        
+        switch (language.toLowerCase()) {
+            case 'bash':
+            case 'sh':
+            case 'shell':
+            case '': // Default to bash if no language specified
+                command = code;
+                break;
+            case 'python':
+            case 'python3':
+                // Write code to temp file and execute
+                const tempFile = path.join(os.tmpdir(), `skill_${Date.now()}_${Math.random().toString(36).substring(7)}.py`);
+                fs.writeFileSync(tempFile, code);
+                command = `python3 "${tempFile}"`;
+                // Clean up temp file after execution
+                setTimeout(() => {
+                    try { fs.unlinkSync(tempFile); } catch {}
+                }, 5000);
+                break;
+            case 'node':
+            case 'javascript':
+            case 'js':
+                // Write code to temp file and execute
+                const tempJsFile = path.join(os.tmpdir(), `skill_${Date.now()}_${Math.random().toString(36).substring(7)}.js`);
+                fs.writeFileSync(tempJsFile, code);
+                command = `node "${tempJsFile}"`;
+                // Clean up temp file after execution
+                setTimeout(() => {
+                    try { fs.unlinkSync(tempJsFile); } catch {}
+                }, 5000);
+                break;
+            case 'typescript':
+            case 'ts':
+                // Write code to temp file and execute with tsx
+                const tempTsFile = path.join(os.tmpdir(), `skill_${Date.now()}_${Math.random().toString(36).substring(7)}.ts`);
+                fs.writeFileSync(tempTsFile, code);
+                command = `npx tsx "${tempTsFile}"`;
+                // Clean up temp file after execution
+                setTimeout(() => {
+                    try { fs.unlinkSync(tempTsFile); } catch {}
+                }, 5000);
+                break;
+            default:
+                return {
+                    success: false,
+                    output: '',
+                    error: `Unsupported script language: ${language}. Supported: bash, python, node, typescript`
+                };
+        }
+        
+        console.log(`🚀 Executing ${language} script in ${workingDir}`);
+        const { stdout, stderr } = await execAsync(command, {
+            cwd: workingDir,
+            maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+        });
+        
+        return {
+            success: true,
+            output: stdout || stderr || 'Script executed successfully',
+            error: stderr || undefined
+        };
+    } catch (error: any) {
+        return {
+            success: false,
+            output: '',
+            error: error.message || 'Script execution failed'
+        };
+    }
+}
+
+/**
+ * Create a tool from a skill
+ */
+function createToolFromSkill(skillInfo: SkillInfo) {
+    return tool({
+        description: skillInfo.description + (skillInfo.hasExecutableScripts ? ' (Contains executable scripts)' : ''),
+        inputSchema: z.object({
+            task: z.string().describe('The task or request that should be handled by this skill'),
+            context: z.string().optional().describe('Additional context or parameters for the skill'),
+            executeScript: z.boolean().optional().describe('If true and skill contains executable scripts, execute them directly. Default: false'),
+            scriptIndex: z.number().optional().describe('Index of the script to execute (0-based). If not specified, executes all executable scripts.'),
+        }),
+        execute: async ({ task, context, executeScript: shouldExecute, scriptIndex }) => {
+            try {
+                console.log(`🎯 Executing skill: ${skillInfo.name}`);
+                console.log(`   Task: ${task}`);
+                if (context) console.log(`   Context: ${context}`);
+                
+                // If skill has executable scripts and user wants to execute them
+                if (shouldExecute && skillInfo.hasExecutableScripts && skillInfo.codeBlocks.length > 0) {
+                    const executableLanguages = ['bash', 'sh', 'shell', 'python', 'python3', 'node', 'javascript', 'js', 'typescript', 'ts'];
+                    const scriptsToExecute = scriptIndex !== undefined
+                        ? [skillInfo.codeBlocks[scriptIndex]].filter(b => b && (executableLanguages.includes(b.language) || b.language === ''))
+                        : skillInfo.codeBlocks.filter(b => executableLanguages.includes(b.language) || b.language === '');
+                    
+                    const executionResults = [];
+                    
+                    for (const script of scriptsToExecute) {
+                        console.log(`   Executing script ${script.index} (${script.language})`);
+                        const result = await executeScript(script.language, script.code);
+                        executionResults.push({
+                            index: script.index,
+                            language: script.language,
+                            code: script.code,
+                            ...result
+                        });
+                    }
+                    
+                    return {
+                        success: true,
+                        skillName: skillInfo.name,
+                        skillDescription: skillInfo.description,
+                        instructions: skillInfo.content,
+                        task: task,
+                        context: context || '',
+                        scriptsExecuted: executionResults.length,
+                        executionResults: executionResults,
+                        message: `Skill ${skillInfo.name} executed. ${executionResults.length} script(s) executed.`
+                    };
+                }
+                
+                // Return the skill content and instructions (default behavior)
+                return {
+                    success: true,
+                    skillName: skillInfo.name,
+                    skillDescription: skillInfo.description,
+                    instructions: skillInfo.content,
+                    codeBlocks: skillInfo.codeBlocks.map(b => ({
+                        language: b.language,
+                        code: b.code,
+                        index: b.index,
+                        executable: ['bash', 'sh', 'shell', 'python', 'python3', 'node', 'javascript', 'js', 'typescript', 'ts', ''].includes(b.language)
+                    })),
+                    hasExecutableScripts: skillInfo.hasExecutableScripts,
+                    task: task,
+                    context: context || '',
+                    message: `Skill ${skillInfo.name} loaded. ${skillInfo.hasExecutableScripts ? `Contains ${skillInfo.codeBlocks.filter(b => ['bash', 'sh', 'shell', 'python', 'python3', 'node', 'javascript', 'js', 'typescript', 'ts', ''].includes(b.language)).length} executable script(s). Set executeScript=true to run them.` : 'Follow the instructions in the skill content to complete the task.'}`
+                };
+            } catch (error: any) {
+                return {
+                    success: false,
+                    error: error.message || 'Failed to execute skill',
+                    skillName: skillInfo.name
+                };
+            }
+        },
+    });
+}
+
+// Load skills at startup
+const loadedSkills = loadSkills();
+const skillTools: Record<string, any> = {};
+
+// Create tools from loaded skills
+for (const [skillKey, skillInfo] of Object.entries(loadedSkills)) {
+    skillTools[skillKey] = createToolFromSkill(skillInfo);
+}
+
+// --- Skills Integration (End) ---
+
+// Combined tools (base + MCP tools + skills)
 function getTools() {
     return {
         ...baseTools,
         ...mcpTools,
+        ...skillTools,
     };
 }
 
@@ -497,12 +772,21 @@ router.post('/api/chat', async (ctx) => {
           
           Available tools: ${toolNames.join(', ')}
           
+          Skills (skill_*): These are specialized Cursor skills that provide detailed instructions for specific tasks.
+          When a skill is called, it returns instructions that you should follow to complete the task.
+          Examples: skill_create-rule (create Cursor rules), skill_create-skill (create new skills), etc.
+          
           For git operations:
           - Use git-mcp tools (git-mcp_*) to check status, add files, commit, and push
           - If git-mcp tools are available, use them directly without asking
           - For "提交代码" or "commit code", you should: check status → add files → commit → push
           
           For file operations: use readFile, writeFile, deleteFile tools.
+          
+          For specialized tasks (creating rules, skills, etc.):
+          - Use skill_* tools when available
+          - When a skill is called, read the returned instructions carefully
+          - Follow the skill's instructions step by step to complete the task
           
           Current working directory: ${PROJECT_ROOT}
           User home directory: ${os.homedir()}
