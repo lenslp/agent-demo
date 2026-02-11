@@ -446,30 +446,45 @@ router.post('/api/chat', async (ctx) => {
         const availableTools = getTools();
         const toolNames = Object.keys(availableTools);
         
+        // Check if user message contains action verbs that require tool usage
+        const lastMessage = messages[messages.length - 1];
+        const userMessage = typeof lastMessage?.content === 'string' 
+            ? lastMessage.content.toLowerCase() 
+            : '';
+        const requiresAction = /(提交|commit|push|执行|执行|做|完成|帮我|请|git|add|status)/.test(userMessage);
+        
         const { text, toolCalls, response } = await generateText({
             model: openai('gpt-4o-mini'),
-            system: `You are a helpful AI Agent named DemoAgent. 
-          You have access to tools to help the user. 
+            system: `You are an ACTION-ORIENTED AI Agent named DemoAgent. 
           
-          IMPORTANT: When the user asks you to do something, you should USE THE AVAILABLE TOOLS to accomplish the task. 
-          Don't just ask for information - use tools to get it or perform actions.
+          CRITICAL RULES:
+          1. When the user asks you to DO something (提交代码, commit, push, etc.), you MUST USE TOOLS immediately.
+          2. DO NOT ask for confirmation or additional information UNLESS absolutely necessary.
+          3. If you need information to complete a task, USE TOOLS to get it first.
+          4. Execute actions proactively - don't just describe what you would do.
           
           Available tools: ${toolNames.join(', ')}
           
-          For git operations (like committing, pushing to GitHub), use the git-mcp tools if available.
-          For file operations, use readFile, writeFile, deleteFile tools.
+          For git operations:
+          - Use git-mcp tools (git-mcp_*) to check status, add files, commit, and push
+          - If git-mcp tools are available, use them directly without asking
+          - For "提交代码" or "commit code", you should: check status → add files → commit → push
           
-          You are running in ${PROJECT_ROOT}. The user's home directory is ${os.homedir()}.
+          For file operations: use readFile, writeFile, deleteFile tools.
           
-          When executing actions:
-          1. First check what tools are available
-          2. Use the appropriate tools to accomplish the task
-          3. If a tool fails, try alternative approaches or ask for clarification
-          4. Always explain what you are doing as you do it.
+          Current working directory: ${PROJECT_ROOT}
+          User home directory: ${os.homedir()}
           
-          Be proactive and use tools to complete tasks rather than just asking questions.`,
+          WORKFLOW FOR ACTION REQUESTS:
+          1. Identify which tools are needed
+          2. Call the tools immediately to gather information or perform actions
+          3. Continue calling tools until the task is complete
+          4. Report results after completion
+          
+          REMEMBER: You are an executor, not a consultant. When asked to do something, DO IT using tools.`,
             messages: messages,
             tools: availableTools,
+            toolChoice: requiresAction ? 'required' : 'auto', // Force tool usage for action requests
             stopWhen: stepCountIs(10), // Increased from 5 to allow more tool calls
         });
 

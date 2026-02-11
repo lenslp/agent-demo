@@ -4,7 +4,8 @@
     "description": "Backend API for Agent Demo",
     "main": "index.ts",
     "scripts": {
-        "dev": "tsx index.ts"
+        "dev": "tsx watch index.ts",
+        "start": "tsx index.ts"
     },
     "dependencies": {
         "@ai-sdk/openai": "^3.0.26",
