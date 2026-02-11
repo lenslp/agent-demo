@@ -1,0 +1,33 @@
+{
+    "name": "@types/koa__cors",
+    "version": "5.0.1",
+    "description": "TypeScript definitions for @koa/cors",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/koa__cors",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Xavier Stouder",
+            "githubUsername": "Xstoudi",
+            "url": "https://github.com/Xstoudi"
+        },
+        {
+            "name": "Steven McDowall",
+            "githubUsername": "sjmcdowall",
+            "url": "https://github.com/sjmcdowall"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/koa__cors"
+    },
+    "scripts": {},
+    "dependencies": {
+        "@types/koa": "*"
+    },
+    "peerDependencies": {},
+    "typesPublisherContentHash": "554e51b785232dbfd45875713c658f4d3d5873fadcb3075fc047fa56eec51ee4",
+    "typeScriptVersion": "5.2"
+}

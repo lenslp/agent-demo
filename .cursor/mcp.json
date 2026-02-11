@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "git-mcp": {
+      "command": "node",
+      "args": ["/Users/nongzhang/Documents/web3-study/作业练习/git-mcp-server/build/index.js"]
+    }
+  }
+}
