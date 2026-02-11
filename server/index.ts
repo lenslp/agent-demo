@@ -98,20 +98,51 @@ function createToolFromMCP(mcpTool: any, mcpClient: Client) {
         inputSchema: inputSchema as z.ZodObject<any>,
         execute: async (args: any) => {
             try {
+                console.log(`🔧 Executing MCP tool: ${mcpTool.name} with args:`, JSON.stringify(args));
+                
                 const result = await mcpClient.callTool({
                     name: mcpTool.name,
                     arguments: args || {},
                 });
                 
                 if (result.isError) {
-                    return { error: result.content?.[0]?.text || 'Unknown error' };
+                    const errorMsg = result.content?.[0]?.text || 'Unknown error';
+                    console.log(`❌ Tool ${mcpTool.name} failed:`, errorMsg);
+                    return { 
+                        success: false,
+                        error: errorMsg,
+                        toolName: mcpTool.name
+                    };
                 }
                 
-                // Extract content from MCP result
-                const content = result.content?.[0]?.text || JSON.stringify(result.content);
-                return { result: content };
+                // Extract content from MCP result - handle multiple content types
+                let content = '';
+                if (result.content && result.content.length > 0) {
+                    const contentParts = result.content.map((item: any) => {
+                        if (item.type === 'text') return item.text;
+                        if (item.type === 'resource') return `[Resource: ${item.resource?.uri || 'unknown'}]`;
+                        return JSON.stringify(item);
+                    });
+                    content = contentParts.join('\n');
+                } else {
+                    content = JSON.stringify(result);
+                }
+                
+                console.log(`✅ Tool ${mcpTool.name} succeeded. Result length: ${content.length} chars`);
+                
+                return { 
+                    success: true,
+                    result: content,
+                    toolName: mcpTool.name,
+                    message: `Tool ${mcpTool.name} executed successfully`
+                };
             } catch (error: any) {
-                return { error: error.message || 'Failed to call MCP tool' };
+                console.error(`❌ Tool ${mcpTool.name} exception:`, error.message);
+                return { 
+                    success: false,
+                    error: error.message || 'Failed to call MCP tool',
+                    toolName: mcpTool.name
+                };
             }
         },
     });
@@ -462,6 +493,7 @@ router.post('/api/chat', async (ctx) => {
           2. DO NOT ask for confirmation or additional information UNLESS absolutely necessary.
           3. If you need information to complete a task, USE TOOLS to get it first.
           4. Execute actions proactively - don't just describe what you would do.
+          5. ALWAYS provide clear feedback after completing tasks - tell the user what was done and the result.
           
           Available tools: ${toolNames.join(', ')}
           
@@ -479,9 +511,20 @@ router.post('/api/chat', async (ctx) => {
           1. Identify which tools are needed
           2. Call the tools immediately to gather information or perform actions
           3. Continue calling tools until the task is complete
-          4. Report results after completion
+          4. ALWAYS provide a clear summary after completion:
+             - What was done
+             - Success or failure status
+             - Any important results or outputs
+             - Next steps if applicable
           
-          REMEMBER: You are an executor, not a consultant. When asked to do something, DO IT using tools.`,
+          FEEDBACK REQUIREMENTS:
+          - After executing tools, ALWAYS provide a summary message to the user
+          - Include the results from tool executions in your response
+          - If a task completes successfully, clearly state "任务已完成" or "Task completed"
+          - If there are errors, explain what went wrong
+          - Never end a response without telling the user what happened
+          
+          REMEMBER: You are an executor, not a consultant. When asked to do something, DO IT using tools, then TELL THE USER what happened.`,
             messages: messages,
             tools: availableTools,
             toolChoice: requiresAction ? 'required' : 'auto', // Force tool usage for action requests
@@ -490,13 +533,27 @@ router.post('/api/chat', async (ctx) => {
 
         if (toolCalls && toolCalls.length > 0) {
             console.log('\n🛠️ Tools used:', toolCalls.map(c => c.toolName).join(', '));
+            console.log(`📊 Total tool calls: ${toolCalls.length}`);
         }
 
-        console.log(`\n✨ Agent response generated`);
+        // Ensure agent provides feedback if tools were used
+        const hasToolCalls = toolCalls && toolCalls.length > 0;
+        const hasTextResponse = text && text.trim().length > 0;
+        
+        // If tools were used but no text response, add a default feedback message
+        let finalText = text;
+        if (hasToolCalls && !hasTextResponse) {
+            finalText = `✅ 已完成 ${toolCalls.length} 个工具调用。任务执行完成。`;
+            console.log('⚠️  No text response after tool calls, adding default feedback');
+        }
+
+        console.log(`\n✨ Agent response generated${hasToolCalls ? ' (with tool calls)' : ''}`);
 
         ctx.body = {
             messages: response.messages,
-            text: text
+            text: finalText || text,
+            toolCalls: toolCalls || [],
+            hasToolCalls: hasToolCalls
         };
 
     } catch (error: any) {
